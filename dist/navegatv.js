@@ -237,10 +237,55 @@
   /* ------------------------------------------------------------------ */
   var curVideo = null, videoChild = null, videoSource = null, vstateTimer = null;
 
-  function videoArea(v) { var r = v.getBoundingClientRect(); return r.width * r.height; }
+  // Componentes web (shadow DOM): muchas páginas esconden ahí el reproductor.
+  var shadowRoots = [];
+  function hookRoot(r) {
+    if (!r || r.__ntvHooked) return;
+    r.__ntvHooked = true;
+    shadowRoots.push(r);
+    try { r.addEventListener('playing', onPlayingEvt, true); } catch (e) {}
+  }
+  try {
+    var oAttachShadow = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (init) {
+      var r = oAttachShadow.call(this, init);
+      try { hookRoot(r); } catch (e) {}
+      return r;
+    };
+  } catch (e) {}
+  function scanShadow(n) {
+    var all = n.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].shadowRoot && !all[i].shadowRoot.__ntvHooked) { hookRoot(all[i].shadowRoot); scanShadow(all[i].shadowRoot); }
+    }
+  }
+  function isConnected(el) { return !!(el && el.isConnected); }
+  function deepFromPoint(x, y) {
+    var el = document.elementFromPoint(x, y);
+    while (el && el.shadowRoot) {
+      var inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+  function parentOf(el) {
+    if (el.parentElement) return el.parentElement;
+    var r = el.getRootNode && el.getRootNode();
+    return r && r.host ? r.host : null;
+  }
+  function allVideos() {
+    try { scanShadow(document); } catch (e) {}
+    var vs = [].slice.call(document.querySelectorAll('video'));
+    for (var i = 0; i < shadowRoots.length; i++) {
+      try { vs = vs.concat([].slice.call(shadowRoots[i].querySelectorAll('video'))); } catch (e) {}
+    }
+    return vs;
+  }
+  function videoArea(v) { var r = v.getBoundingClientRect(); return Math.max(r.width, 1) * Math.max(r.height, r.width * 0.56, 1); }
   function pickVideo() {
-    if (curVideo && document.contains(curVideo)) return curVideo;
-    var vs = document.querySelectorAll('video'), best = null, bestScore = 0;
+    if (curVideo && isConnected(curVideo)) return curVideo;
+    var vs = allVideos(), best = null, bestScore = 0;
     for (var i = 0; i < vs.length; i++) {
       var s = videoArea(vs[i]) * (vs[i].paused ? 1 : 3) + (vs[i].currentSrc ? 1 : 0);
       if (s > bestScore) { bestScore = s; best = vs[i]; }
@@ -250,14 +295,16 @@
   function videoState(v) {
     return { cur: v.currentTime || 0, dur: isFinite(v.duration) ? v.duration : 0, paused: v.paused };
   }
-  document.addEventListener('playing', function (e) {
-    var v = e.target;
+  function onPlayingEvt(e) {
+    var v = e.composedPath ? e.composedPath()[0] : e.target;
     if (!v || v.tagName !== 'VIDEO') return;
-    if (videoArea(v) < 200 * 120 && !videoMode) return;
+    var rr = v.getBoundingClientRect();
+    if (rr.width < 200 && rr.height < 120 && !videoMode) return;
     curVideo = v;
     var st = videoState(v);
     if (IS_TOP) onVideoFound('local', st); else { videoSource = 'local'; sendUp({ t: 'hasvideo', st: st }); }
-  }, true);
+  }
+  document.addEventListener('playing', onPlayingEvt, true);
 
   function vcmd(cmd, arg) {
     var v = pickVideo();
@@ -284,7 +331,9 @@
     'width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;min-width:0!important;' +
     'min-height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483646!important;' +
     'background:#000!important;transform:none!important;visibility:visible!important;opacity:1!important;';
-  var maxed = null;
+  var maxed = null, ancList = [];
+  var ANC_STYLE = 'transform:none!important;filter:none!important;contain:none!important;perspective:none!important;' +
+    'will-change:auto!important;z-index:2147483646!important;clip-path:none!important;overflow:visible!important;visibility:visible!important;opacity:1!important;';
   function ensurePageCss() {
     if (document.getElementById('ntv-page-css')) return;
     var s = document.createElement('style');
@@ -302,7 +351,12 @@
     el.__ntvStyle = el.getAttribute('style');
     el.setAttribute('style', (el.__ntvStyle || '') + ';' + STYLE_MAX + (el.tagName === 'VIDEO' ? 'object-fit:contain!important;' : ''));
     el.classList.add('ntv-max');
-    for (var p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) p.classList.add('ntv-anc');
+    ancList = [];
+    for (var p = parentOf(el); p && p !== document.documentElement && p !== document.body; p = parentOf(p)) {
+      p.classList.add('ntv-anc');
+      ancList.push([p, p.getAttribute('style')]);
+      p.setAttribute('style', (p.getAttribute('style') || '') + ';' + ANC_STYLE);
+    }
     document.documentElement.classList.add('ntv-vmode');
     maxed = el;
   }
@@ -310,8 +364,12 @@
     if (!maxed) return;
     if (maxed.__ntvStyle == null) maxed.removeAttribute('style'); else maxed.setAttribute('style', maxed.__ntvStyle);
     maxed.classList.remove('ntv-max');
-    var ancs = document.querySelectorAll('.ntv-anc');
-    for (var i = 0; i < ancs.length; i++) ancs[i].classList.remove('ntv-anc');
+    for (var i = 0; i < ancList.length; i++) {
+      var a = ancList[i][0];
+      a.classList.remove('ntv-anc');
+      if (ancList[i][1] == null) a.removeAttribute('style'); else a.setAttribute('style', ancList[i][1]);
+    }
+    ancList = [];
     document.documentElement.classList.remove('ntv-vmode');
     maxed = null;
   }
@@ -323,7 +381,7 @@
       if (vstateTimer) { clearInterval(vstateTimer); vstateTimer = null; }
       return;
     }
-    var local = curVideo && document.contains(curVideo) ? curVideo : null;
+    var local = curVideo && isConnected(curVideo) ? curVideo : null;
     if (videoSource === 'child' && videoChild && document.contains(videoChild)) {
       maximize(videoChild);
       sendDown(videoChild.contentWindow, { t: 'vmode', on: true });
@@ -403,7 +461,7 @@
   }
   function clickAt(x, y) {
     lastUserAct = Date.now();
-    var el = document.elementFromPoint(x, y);
+    var el = deepFromPoint(x, y);
     if (!el || el.id === 'ntv-host') return;
     if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
       var off = iframeOffset(el);
@@ -428,7 +486,7 @@
   }
   var lastHover = null;
   function hoverAt(x, y) {
-    var el = document.elementFromPoint(x, y);
+    var el = deepFromPoint(x, y);
     if (!el || el.id === 'ntv-host') return;
     if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
       var off = iframeOffset(el);
@@ -439,14 +497,14 @@
     mouse(el, 'mousemove', x, y);
   }
   function scrollableAt(el) {
-    for (var p = el; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+    for (var p = el; p && p !== document.body && p !== document.documentElement; p = parentOf(p)) {
       var cs = getComputedStyle(p);
       if (/(auto|scroll|overlay)/.test(cs.overflowY) && p.scrollHeight > p.clientHeight + 4) return p;
     }
     return null;
   }
   function scrollAt(x, y, dy) {
-    var el = document.elementFromPoint(x, y);
+    var el = deepFromPoint(x, y);
     if (el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME') && el.contentWindow) {
       var off = iframeOffset(el);
       sendDown(el.contentWindow, { t: 'scroll', x: x - off.x, y: y - off.y, dy: dy });
@@ -722,7 +780,7 @@
       } },
       { ic: '📺', t: 'Ver video en pantalla completa', fn: function () {
         closeMenu();
-        if (!videoSource && !document.querySelector('video') && !videoChild) { toast('No encontré un video. Dale play primero.'); return; }
+        if (!videoSource && !allVideos().length && !videoChild && !document.querySelector('iframe')) { toast('No encontré un video en esta página.'); return; }
         enterVideo();
       } },
       { ic: 'A+', t: 'Agrandar página', fn: function () { setZoom(zoom + 0.1); } },
