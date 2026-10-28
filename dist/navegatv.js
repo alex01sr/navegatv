@@ -1051,6 +1051,23 @@
     if ([37, 38, 39, 40, 13, 10009].indexOf(e.keyCode) >= 0) e.stopImmediatePropagation();
   }, true);
 
+  /* --- el foco nunca se queda en un recuadro interno (iframe) --- */
+  // Si una página manda el foco a un iframe, las teclas dejan de llegar a NavegaTV.
+  function reclaimFocus() {
+    var ae = document.activeElement;
+    if (ae && (ae.tagName === 'IFRAME' || ae.tagName === 'FRAME' || ae.tagName === 'EMBED' || ae.tagName === 'OBJECT')) {
+      try { ae.blur(); } catch (e) {}
+      try { window.focus(); } catch (e) {}
+      try { document.body && document.body.focus && document.body.focus(); } catch (e) {}
+    }
+  }
+  window.addEventListener('blur', function () { setTimeout(reclaimFocus, 0); setTimeout(reclaimFocus, 300); });
+  setInterval(reclaimFocus, 1000);
+  // Los alert() de las páginas abren una ventana del sistema que se traga las teclas.
+  try {
+    Object.defineProperty(window, 'alert', { value: function (m) { toast(String(m == null ? '' : m).slice(0, 200), 4000); }, writable: false, configurable: false });
+  } catch (e) {}
+
   /* --- arranque --- */
   onReady(function () {
     dropFocus(document.activeElement);
