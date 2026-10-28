@@ -1,0 +1,14 @@
+<!doctype html><html><head><title>Pagina de prueba</title></head>
+<body style="margin:0;font:20px sans-serif;height:3000px">
+<h1>Sitio de prueba</h1>
+<a id="ok" href="/top.html?x=1">Enlace normal</a> · <a id="ext" target="_blank" href="http://127.0.0.1:8002/other.html">Otro sitio visible</a>
+<div style="position:relative;width:800px;height:450px;margin-top:20px">
+ <iframe id="pl" src="http://127.0.0.1:8002/player.html" style="width:800px;height:450px;border:0" allow="autoplay"></iframe>
+</div>
+<a id="trap" href="https://propellerads.example/land" target="_blank" style="position:fixed;inset:0;z-index:99999;opacity:0"></a>
+<a id="trap2" href="https://randomshady.example/x" target="_blank" style="position:fixed;inset:0;z-index:999;opacity:0.01"></a>
+<script>
+document.addEventListener('click', function(){ window.LOG.push('open:'+ (window.open('https://popup.example') ? 'ret' : 'null')); });
+window.LOG=[];
+setTimeout(function(){ var s=document.createElement('script'); s.src='https://cdn.adsterra.example/x.js'; document.body.appendChild(s); window.LOG.push('adscript-inserted:'+document.contains(s)); }, 500);
+</script></body></html>

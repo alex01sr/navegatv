@@ -1,0 +1,24 @@
+{
+  "name": "navegatv",
+  "appName": "NavegaTV",
+  "version": "1.0.0",
+  "description": "Navegador para TV Samsung: bloquea ventanas emergentes y pone los videos en pantalla completa con controles de TV.",
+  "packageType": "mods",
+  "websiteURL": "https://duckduckgo.com/?navegatv=home",
+  "main": "dist/navegatv.js",
+  "keys": [
+    "MediaPlayPause",
+    "MediaPlay",
+    "MediaPause",
+    "MediaStop",
+    "MediaFastForward",
+    "MediaRewind",
+    "ChannelUp",
+    "ChannelDown",
+    "ColorF0Red",
+    "ColorF1Green",
+    "ColorF2Yellow",
+    "ColorF3Blue"
+  ],
+  "license": "MIT"
+}

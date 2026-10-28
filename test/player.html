@@ -1,0 +1,7 @@
+<!doctype html><html><body style="margin:0;background:#222">
+<video id="v" src="/video.mp4" style="width:100%;height:100%" playsinline></video>
+<div id="big" style="position:absolute;inset:0;cursor:pointer"></div>
+<script>
+var v=document.getElementById('v'); v.loop=true; Object.defineProperty(v,'duration',{get:function(){return 600;}});
+document.getElementById('big').addEventListener('click',function(){ window.open('https://ad.example/pop'); v.play(); });
+</script></body></html>
