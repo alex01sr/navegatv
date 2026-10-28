@@ -331,47 +331,73 @@
     'width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;min-width:0!important;' +
     'min-height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483646!important;' +
     'background:#000!important;transform:none!important;visibility:visible!important;opacity:1!important;';
-  var maxed = null, ancList = [];
-  var ANC_STYLE = 'transform:none!important;filter:none!important;contain:none!important;perspective:none!important;' +
-    'will-change:auto!important;z-index:2147483646!important;clip-path:none!important;overflow:visible!important;visibility:visible!important;opacity:1!important;';
+  var maxed = null, savedStyles = [];
+  // Cada contenedor del video pasa a ocupar toda la pantalla (así ningún contenedor lo "encierra")
+  // y todo lo demás de la página se oculta. Funciona también dentro de componentes web.
+  var ANC_STYLE = 'position:fixed!important;left:0!important;top:0!important;right:auto!important;bottom:auto!important;' +
+    'width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;' +
+    'margin:0!important;padding:0!important;border:0!important;transform:none!important;filter:none!important;backdrop-filter:none!important;' +
+    'contain:none!important;container-type:normal!important;content-visibility:visible!important;perspective:none!important;will-change:auto!important;' +
+    'overflow:visible!important;z-index:2147483646!important;visibility:visible!important;opacity:1!important;clip-path:none!important;' +
+    'mask:none!important;background:#000!important;';
+  var HIDE_STYLE = 'visibility:hidden!important;pointer-events:none!important;';
   function ensurePageCss() {
     if (document.getElementById('ntv-page-css')) return;
     var s = document.createElement('style');
     s.id = 'ntv-page-css';
-    s.textContent = '.ntv-anc{transform:none!important;filter:none!important;contain:none!important;perspective:none!important;' +
-      'will-change:auto!important;z-index:2147483646!important;clip-path:none!important;mask:none!important}' +
-      'html.ntv-vmode,html.ntv-vmode body{overflow:hidden!important}' +
-      'html.ntv-vmode body > *:not(.ntv-anc):not(#ntv-host):not(.ntv-max){visibility:hidden!important}';
+    s.textContent = 'html.ntv-vmode,html.ntv-vmode body{overflow:hidden!important;background:#000!important}';
     (document.head || document.documentElement).appendChild(s);
+  }
+  function addStyle(el, css) {
+    savedStyles.push([el, el.getAttribute('style'), css]);
+    el.setAttribute('style', (el.getAttribute('style') || '') + ';' + css);
+  }
+  // Muchos reproductores reescriben sus estilos al dar play: se vuelven a aplicar.
+  var guardTimer = null;
+  function guardMax() {
+    if (!maxed) return;
+    for (var i = 0; i < savedStyles.length; i++) {
+      var e = savedStyles[i][0], css = savedStyles[i][2];
+      var cur = e.getAttribute('style') || '';
+      if (cur.indexOf(css) < 0) e.setAttribute('style', cur + ';' + css);
+    }
+    if (!document.documentElement.classList.contains('ntv-vmode')) document.documentElement.classList.add('ntv-vmode');
+    ensurePageCss();
   }
   function maximize(el) {
     if (maxed === el) return;
     restore();
     ensurePageCss();
-    el.__ntvStyle = el.getAttribute('style');
-    el.setAttribute('style', (el.__ntvStyle || '') + ';' + STYLE_MAX + (el.tagName === 'VIDEO' ? 'object-fit:contain!important;' : ''));
-    el.classList.add('ntv-max');
-    ancList = [];
-    for (var p = parentOf(el); p && p !== document.documentElement && p !== document.body; p = parentOf(p)) {
-      p.classList.add('ntv-anc');
-      ancList.push([p, p.getAttribute('style')]);
-      p.setAttribute('style', (p.getAttribute('style') || '') + ';' + ANC_STYLE);
+    addStyle(el, STYLE_MAX + (el.tagName === 'VIDEO' ? 'object-fit:contain!important;' : ''));
+    var node = el;
+    while (node) {
+      var par = node.parentNode;
+      if (!par) break;
+      var sibs = par.children || [];
+      for (var i = 0; i < sibs.length; i++) {
+        var sb = sibs[i];
+        if (sb === node || sb.id === 'ntv-host' || /^(STYLE|SCRIPT|LINK|META|TEMPLATE|SLOT)$/.test(sb.tagName)) continue;
+        addStyle(sb, HIDE_STYLE);
+      }
+      var up = par.host ? par.host : (par.nodeType === 1 ? par : null);
+      if (!up || up === document.body || up === document.documentElement) break;
+      addStyle(up, ANC_STYLE);
+      node = up;
     }
     document.documentElement.classList.add('ntv-vmode');
     maxed = el;
+    if (!guardTimer) guardTimer = setInterval(guardMax, 500);
   }
   function restore() {
     if (!maxed) return;
-    if (maxed.__ntvStyle == null) maxed.removeAttribute('style'); else maxed.setAttribute('style', maxed.__ntvStyle);
-    maxed.classList.remove('ntv-max');
-    for (var i = 0; i < ancList.length; i++) {
-      var a = ancList[i][0];
-      a.classList.remove('ntv-anc');
-      if (ancList[i][1] == null) a.removeAttribute('style'); else a.setAttribute('style', ancList[i][1]);
+    for (var i = savedStyles.length - 1; i >= 0; i--) {
+      var e = savedStyles[i][0], st = savedStyles[i][1];
+      if (st == null) e.removeAttribute('style'); else e.setAttribute('style', st);
     }
-    ancList = [];
+    savedStyles = [];
     document.documentElement.classList.remove('ntv-vmode');
     maxed = null;
+    if (guardTimer) { clearInterval(guardTimer); guardTimer = null; }
   }
   function setVideoMode(on) {
     videoMode = on;
