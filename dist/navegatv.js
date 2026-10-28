@@ -346,6 +346,41 @@
   /* ------------------------------------------------------------------ */
   /* 3. Clic y scroll en un punto (también dentro de iframes)            */
   /* ------------------------------------------------------------------ */
+  // El teclado de Samsung no le pasa bien el texto a las páginas y se roba las flechas.
+  // Las cajas de texto nunca se quedan con el foco: se escribe con el teclado de NavegaTV.
+  var pendingEdit = null, editChild = null, editSource = null;
+  function isTextField(el) { return isEditable(el) && el.tagName !== 'SELECT'; }
+  function dropFocus(t) {
+    if (!isTextField(t)) return;
+    try { t.setAttribute('inputmode', 'none'); } catch (err) {}
+    setTimeout(function () { try { t.blur(); } catch (err) {} }, 0);
+  }
+  document.addEventListener('focusin', function (e) {
+    if (typeof host !== 'undefined' && host && e.target === host) return;
+    dropFocus(e.composedPath ? e.composedPath()[0] : e.target);
+  }, true);
+  function getVal(el) { return el.isContentEditable ? (el.textContent || '') : (el.value || ''); }
+  function applyText(el, text, submit) {
+    try {
+      if (el.isContentEditable) el.textContent = text;
+      else {
+        var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
+      }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (e) {}
+    if (!submit) return;
+    lastUserAct = Date.now(); allowNavTs = Date.now();
+    var ok = true;
+    ['keydown', 'keypress', 'keyup'].forEach(function (type) {
+      var ev = new KeyboardEvent(type, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true });
+      try { Object.defineProperty(ev, 'keyCode', { get: function () { return 13; } }); Object.defineProperty(ev, 'which', { get: function () { return 13; } }); } catch (e) {}
+      var r = el.dispatchEvent(ev);
+      if (type === 'keydown') ok = r;
+    });
+    if (ok && el.form) setTimeout(function () { try { if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit(); } catch (e) {} }, 60);
+  }
   function isEditable(el) {
     if (!el) return false;
     if (el.isContentEditable) return true;
@@ -379,7 +414,14 @@
     lastClickHref = a ? a.href : null;
     mouse(el, 'pointerover', x, y); mouse(el, 'mouseover', x, y);
     mouse(el, 'pointerdown', x, y); mouse(el, 'mousedown', x, y);
-    if (isEditable(el)) { try { el.focus(); } catch (e) {} }
+    if (isTextField(el)) {
+      mouse(el, 'pointerup', x, y); mouse(el, 'mouseup', x, y); mouse(el, 'click', x, y);
+      pendingEdit = el; editSource = 'local';
+      var info = { text: getVal(el), ph: el.getAttribute('placeholder') || el.getAttribute('aria-label') || '', pw: el.type === 'password' };
+      if (IS_TOP) openKb('page', info); else sendUp({ t: 'edit', info: info });
+      return;
+    }
+    if (el.tagName === 'SELECT') { try { el.focus(); } catch (e) {} }
     mouse(el, 'pointerup', x, y); mouse(el, 'mouseup', x, y);
     mouse(el, 'click', x, y);
     if (el.tagName === 'VIDEO') vcmd('toggle');
@@ -430,6 +472,10 @@
       else if (d.t === 'vmode') {
         if (d.on) setVideoMode(true); else setVideoMode(false);
       } else if (d.t === 'vcmd') routeVcmd(d.cmd, d.arg);
+      else if (d.t === 'setval') {
+        if (editSource === 'child' && editChild && editChild.contentWindow) sendDown(editChild.contentWindow, { t: 'setval', text: d.text, submit: d.submit });
+        else if (pendingEdit) applyText(pendingEdit, d.text, d.submit);
+      }
       return;
     }
     // Mensajes que suben desde un iframe hijo.
@@ -437,11 +483,13 @@
     if (!fe) return;
     if (d.t === 'hasvideo') { videoChild = fe; videoSource = 'child'; }
     if (d.t === 'vstate' && fe !== videoChild) return;
+    if (d.t === 'edit') { editChild = fe; editSource = 'child'; }
     if (IS_TOP) {
       if (d.t === 'blocked') onBlocked(d.what);
       else if (d.t === 'hasvideo') onVideoFound('child', d.st);
       else if (d.t === 'vstate') onVideoState(d.st);
       else if (d.t === 'key') onKey(d.code, d.repeat, null);
+      else if (d.t === 'edit') openKb('frame', d.info);
     } else {
       delete d.__ntv; delete d.dir;
       sendUp(d);
@@ -453,8 +501,9 @@
   /* ------------------------------------------------------------------ */
   if (!IS_TOP) {
     window.addEventListener('keydown', function (e) {
+      if (!e.isTrusted) return;
       var ae = document.activeElement;
-      if (isEditable(ae) && e.keyCode !== K.BACK) return;
+      if (ae && ae.tagName === 'SELECT' && e.keyCode !== K.BACK) return;
       e.preventDefault(); e.stopImmediatePropagation();
       sendUp({ t: 'key', code: e.keyCode, repeat: e.repeat });
     }, true);
@@ -465,7 +514,7 @@
   /* ================================================================== */
   /* Solo en la página principal: interfaz, cursor, menú y modo video   */
   /* ================================================================== */
-  var host, root, cursorEl, toastEl, osdEl, menuEl, urlEl, homeEl;
+  var host, root, cursorEl, toastEl, osdEl, menuEl, kbEl, homeEl;
   var cx = Math.round(innerWidth / 2), cy = Math.round(innerHeight / 2);
   var menuIdx = 0, menuItems = [], homeIdx = 0, homeItems = [], deleteMode = false;
   var zoom = 1;
@@ -490,11 +539,21 @@
     '#menu .it .ic{width:36px;text-align:center}',
     '#menu .it.sel{background:#4f8cff;color:#fff}',
     '#menu .sub{padding:4px 34px 12px;font-size:20px;opacity:.6}',
-    '#url{left:50%;top:120px;width:1200px;margin-left:-600px;padding:36px 40px;display:none}',
-    '#url.on{display:block}',
-    '#url .lbl{font-size:24px;opacity:.7;margin-bottom:16px}',
-    '#url input{width:100%;font-size:36px;padding:18px 22px;border-radius:12px;border:3px solid #4f8cff;background:#0b0d12;color:#fff;outline:none}',
-    '#url .hint{margin-top:14px;font-size:20px;opacity:.6}',
+    '#kb{left:50%;bottom:40px;width:1240px;margin-left:-620px;padding:28px 30px 24px;display:none;z-index:8}',
+    '#kb.on{display:block}',
+    '#kb .lbl{font-size:22px;opacity:.7;margin:0 4px 10px}',
+    '#kb .field{font-size:34px;padding:16px 20px;border-radius:12px;border:3px solid #4f8cff;background:#0b0d12;color:#fff;min-height:74px;white-space:nowrap;overflow:hidden;text-overflow:clip;direction:ltr}',
+    '#kb .field .ph{opacity:.4}',
+    '#kb .caret{display:inline-block;width:3px;height:38px;margin-left:2px;vertical-align:middle;background:#4f8cff;animation:bl 1s steps(1) infinite}',
+    '@keyframes bl{50%{opacity:0}}',
+    '#kb .rows{margin-top:18px}',
+    '#kb .row{display:flex;gap:8px;margin-bottom:8px}',
+    '#kb .k{flex:1;height:68px;border-radius:12px;background:rgba(255,255,255,.09);display:flex;align-items:center;justify-content:center;font-size:30px;border:3px solid transparent}',
+    '#kb .k.sp{font-size:22px;background:rgba(255,255,255,.05)}',
+    '#kb .k.on{background:rgba(79,140,255,.35)}',
+    '#kb .k.go{background:#2e6be6}',
+    '#kb .k.sel{border-color:#fff;background:#4f8cff;transform:scale(1.06)}',
+    '#kb .hint{margin-top:8px;font-size:19px;opacity:.55}',
     '#home{left:0;top:0;right:0;bottom:0;border-radius:0;padding:70px 110px;display:none;background:linear-gradient(135deg,#0d1117,#162038)}',
     '#home.on{display:block}',
     '#home h1{margin:0 0 6px;font-size:56px;font-weight:700}',
@@ -528,17 +587,16 @@
       '<div id="osd"><div class="row"><div class="st">▶</div><div class="tm">0:00</div><div class="bar"><div class="fill"></div></div><div class="du">0:00</div></div>' +
       '<div class="hint">◀ ▶ atrasar / adelantar · OK pausa · CH ▲▼ ±1 min · Atrás salir</div></div>' +
       '<div id="menu" class="panel"></div>' +
-      '<div id="url" class="panel"><div class="lbl">Buscar o escribir dirección</div><input type="text" autocomplete="off" autocapitalize="off" spellcheck="false"><div class="hint">OK para ir · Atrás para cancelar</div></div>' +
+      '<div id="kb" class="panel"></div>' +
       '<div id="home" class="panel"></div>';
     cursorEl = root.getElementById('cur');
     toastEl = root.getElementById('toast');
     osdEl = root.getElementById('osd');
     menuEl = root.getElementById('menu');
-    urlEl = root.getElementById('url');
+    kbEl = root.getElementById('kb');
     homeEl = root.getElementById('home');
     document.documentElement.appendChild(host);
     drawCursor();
-    urlEl.querySelector('input').addEventListener('keydown', urlKey, true);
   }
 
   /* --- avisos --- */
@@ -622,7 +680,7 @@
     }
   }
   function enterVideo() {
-    closeMenu(); closeUrl();
+    closeMenu(); closeKb();
     setVideoMode(true);
     drawCursor();
     showOsd();
@@ -694,31 +752,96 @@
     if (menuOpen()) buildMenu();
   }
 
-  /* --- barra de dirección --- */
-  function urlOpen() { return urlEl && urlEl.classList.contains('on'); }
-  function openUrl() {
-    urlEl.classList.add('on');
-    var inp = urlEl.querySelector('input');
-    inp.value = isHome() ? '' : location.href;
-    setTimeout(function () { try { inp.focus(); inp.select(); } catch (e) {} }, 50);
+  /* --- teclado en pantalla de NavegaTV --- */
+  var KB_ROWS = [
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+    ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+    ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ñ'],
+    ['z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-'],
+    ['@', '/', ':', '_', '?', '=', '&', '#', '!', '+'],
+    [{ k: 'shift', l: '⇧ Mayús', w: 2 }, { k: 'space', l: 'Espacio', w: 3 }, { k: 'bs', l: '⌫', w: 1 },
+      { k: 'clear', l: 'Borrar', w: 1 }, { k: '.com', l: '.com', w: 1 }, { k: 'go', l: 'Ir ➜', w: 2 }]
+  ];
+  var kb = { open: false, mode: null, text: '', ph: '', pw: false, shift: false, r: 1, c: 0 };
+  function kbKeyAt(r, c) { var k = KB_ROWS[r][c]; return typeof k === 'string' ? { k: k, l: k, w: 1 } : k; }
+  function kbOpen() { return kb.open; }
+  function openKb(mode, info) {
+    closeMenu();
+    kb.open = true; kb.mode = mode; kb.text = info.text || ''; kb.ph = info.ph || ''; kb.pw = !!info.pw;
+    kb.shift = false; kb.r = 1; kb.c = 0;
+    kbEl.classList.add('on');
+    cursorEl.style.display = 'none';
+    renderKb();
   }
-  function closeUrl() {
-    if (!urlEl) return;
-    urlEl.classList.remove('on');
-    try { urlEl.querySelector('input').blur(); } catch (e) {}
+  function closeKb() {
+    if (!kbEl) return;
+    kb.open = false; kbEl.classList.remove('on');
+    if (!homeOpen()) drawCursor();
   }
-  function submitUrl() {
-    var v = urlEl.querySelector('input').value.trim();
-    closeUrl();
+  function renderKb() {
+    var shown = kb.pw ? kb.text.replace(/./g, '•') : kb.text;
+    var h = '<div class="lbl">' + (kb.mode === 'url' ? 'Buscar o escribir dirección' : 'Escribir' + (kb.ph ? ': ' + esc(kb.ph) : '')) + '</div>' +
+      '<div class="field">' + (shown ? esc(shown) : '<span class="ph">' + (kb.mode === 'url' ? 'ej: wikipedia.org o una búsqueda' : '') + '</span>') + '<span class="caret"></span></div><div class="rows">';
+    for (var r = 0; r < KB_ROWS.length; r++) {
+      h += '<div class="row">';
+      for (var c = 0; c < KB_ROWS[r].length; c++) {
+        var k = kbKeyAt(r, c);
+        var label = k.l.length === 1 && kb.shift ? k.l.toUpperCase() : k.l;
+        var cls = 'k' + (k.l.length > 1 ? ' sp' : '') + (k.k === 'shift' && kb.shift ? ' on' : '') + (k.k === 'go' ? ' go' : '') + (r === kb.r && c === kb.c ? ' sel' : '');
+        h += '<div class="' + cls + '" style="flex:' + k.w + '">' + esc(label) + '</div>';
+      }
+      h += '</div>';
+    }
+    h += '</div><div class="hint">Flechas para moverte · OK escribe · Atrás cancela · "Ir" para terminar</div>';
+    kbEl.innerHTML = h;
+    var f = kbEl.querySelector('.field'); f.scrollLeft = f.scrollWidth;
+  }
+  function kbCenter(r, c) {
+    var x = 0;
+    for (var i = 0; i < c; i++) x += kbKeyAt(r, i).w;
+    return x + kbKeyAt(r, c).w / 2;
+  }
+  function kbColFor(r, x) {
+    var acc = 0;
+    for (var i = 0; i < KB_ROWS[r].length; i++) { acc += kbKeyAt(r, i).w; if (x < acc) return i; }
+    return KB_ROWS[r].length - 1;
+  }
+  function kbPress(k) {
+    if (k.k === 'shift') kb.shift = !kb.shift;
+    else if (k.k === 'space') kb.text += ' ';
+    else if (k.k === 'bs') kb.text = kb.text.slice(0, -1);
+    else if (k.k === 'clear') kb.text = '';
+    else if (k.k === '.com') kb.text += '.com';
+    else if (k.k === 'go') { submitKb(); return; }
+    else kb.text += kb.shift ? k.k.toUpperCase() : k.k;
+    renderKb();
+  }
+  function submitKb() {
+    var text = kb.text, mode = kb.mode;
+    closeKb();
+    if (mode === 'url') { goTyped(text); return; }
+    if (mode === 'page') { if (pendingEdit) applyText(pendingEdit, text, true); return; }
+    if (mode === 'frame' && editChild && editChild.contentWindow) sendDown(editChild.contentWindow, { t: 'setval', text: text, submit: true });
+  }
+  function kbKey(code, ev) {
+    if (code === K.UP) { if (kb.r > 0) { var x = kbCenter(kb.r, kb.c); kb.r--; kb.c = kbColFor(kb.r, x); } }
+    else if (code === K.DOWN) { if (kb.r < KB_ROWS.length - 1) { var x2 = kbCenter(kb.r, kb.c); kb.r++; kb.c = kbColFor(kb.r, x2); } }
+    else if (code === K.LEFT) kb.c = (kb.c + KB_ROWS[kb.r].length - 1) % KB_ROWS[kb.r].length;
+    else if (code === K.RIGHT) kb.c = (kb.c + 1) % KB_ROWS[kb.r].length;
+    else if (code === K.ENTER) { kbPress(kbKeyAt(kb.r, kb.c)); return; }
+    else if (code === K.BACK || code === K.ESC) { closeKb(); return; }
+    else if (code === K.BACKSPACE) kb.text = kb.text.slice(0, -1);
+    else if (code === K.PLAYPAUSE || code === K.PLAY) { submitKb(); return; }
+    else if (ev && ev.key && ev.key.length === 1) kb.text += ev.key;   // teclado USB o del teléfono
+    renderKb();
+  }
+  function openUrl() { openKb('url', { text: isHome() ? '' : location.href }); }
+  function goTyped(v) {
+    v = (v || '').trim();
     if (!v) return;
     if (/^[a-z]+:\/\//i.test(v)) go(v);
-    else if (/^[^\s]+\.[a-z]{2,}(\/.*)?$/i.test(v)) go('https://' + v);
+    else if (/^[^\s]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(v)) go('https://' + v);
     else go(SEARCH_URL + encodeURIComponent(v));
-  }
-  function urlKey(e) {
-    var c = e.keyCode;
-    if (c === K.ENTER || c === K.IME_DONE) { e.preventDefault(); e.stopPropagation(); submitUrl(); }
-    else if (c === K.BACK || c === K.ESC || c === K.IME_CANCEL) { e.preventDefault(); e.stopPropagation(); closeUrl(); }
   }
 
   /* --- inicio y favoritos (se guardan en el almacenamiento de la página de inicio) --- */
@@ -790,11 +913,8 @@
 
   /* --- teclas --- */
   function onKey(code, repeat, ev) {
-    if (homeOpen() && !urlOpen()) { homeKey(code); return true; }
-    if (urlOpen()) {
-      if (code === K.BACK || code === K.ESC) { closeUrl(); return true; }
-      return false;
-    }
+    if (kbOpen()) { kbKey(code, ev); return true; }
+    if (homeOpen()) { homeKey(code); return true; }
     if (menuOpen()) { menuKey(code); return true; }
 
     if (videoMode) {
@@ -813,9 +933,10 @@
       return true;
     }
 
-    // Un campo de texto de la página tiene el foco: dejar escribir.
+    // Si quedó una caja de texto con el foco, se le quita: el control manda siempre el cursor.
     var ae = document.activeElement;
-    if (ev && isEditable(ae) && ae !== host) {
+    if (ae && ae !== host && isTextField(ae)) { dropFocus(ae); }
+    else if (ev && ae && ae.tagName === 'SELECT') {
       if (code === K.BACK || code === K.ESC) { try { ae.blur(); } catch (e) {} return true; }
       return false;
     }
@@ -835,8 +956,7 @@
   }
 
   window.addEventListener('keydown', function (e) {
-    if (!host) return;
-    if (e.composedPath && e.composedPath()[0] && urlEl && urlEl.contains(e.composedPath()[0])) return;
+    if (!host || !e.isTrusted) return;
     if (onKey(e.keyCode, e.repeat, e)) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
   // Las teclas no deben llegar a la página mientras manejamos el cursor.
@@ -849,6 +969,8 @@
 
   /* --- arranque --- */
   onReady(function () {
+    dropFocus(document.activeElement);
+    setTimeout(function () { dropFocus(document.activeElement); }, 800);
     buildUi();
     startObserver();
     setInterval(buildUi, 2000);
