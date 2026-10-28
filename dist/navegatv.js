@@ -574,6 +574,7 @@
       else if (d.t === 'vstate') onVideoState(d.st);
       else if (d.t === 'key') onKey(d.code, d.repeat, null);
       else if (d.t === 'edit') openKb('frame', d.info);
+      else if (d.t === 'vinfo') noteVinfo(fe, d);
     } else {
       delete d.__ntv; delete d.dir;
       sendUp(d);
@@ -591,14 +592,20 @@
       e.preventDefault(); e.stopImmediatePropagation();
       sendUp({ t: 'key', code: e.keyCode, repeat: e.repeat });
     }, true);
-    onReady(startObserver);
+    // Avisar al nivel superior si este recuadro tiene videos (para el buscador de videos).
+    var reportVideos = function () {
+      var vs = allVideos().filter(function (v) { return v.currentSrc || v.src || v.querySelector('source'); });
+      if (vs.length) sendUp({ t: 'vinfo', n: vs.length, dur: isFinite(vs[0].duration) ? vs[0].duration : 0 });
+    };
+    onReady(function () { startObserver(); setTimeout(reportVideos, 1500); setTimeout(reportVideos, 5000); });
+    document.addEventListener('loadedmetadata', reportVideos, true);
     return;
   }
 
   /* ================================================================== */
   /* Solo en la página principal: interfaz, cursor, menú y modo video   */
   /* ================================================================== */
-  var host, root, cursorEl, toastEl, osdEl, menuEl, kbEl, homeEl;
+  var host, root, cursorEl, toastEl, osdEl, menuEl, kbEl, homeEl, pickEl;
   var cx = Math.round(innerWidth / 2), cy = Math.round(innerHeight / 2);
   var menuIdx = 0, menuItems = [], homeIdx = 0, homeItems = [], deleteMode = false;
   var zoom = 1;
@@ -649,7 +656,17 @@
     '#home .fav .u{font-size:18px;opacity:.55;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}',
     '#home .sel{border-color:#4f8cff;background:rgba(79,140,255,.22);transform:scale(1.04)}',
     '#home.del .fav.sel{border-color:#ff5c5c;background:rgba(255,92,92,.22)}',
-    '#home .foot{position:absolute;left:110px;bottom:50px;font-size:22px;opacity:.6}'
+    '#home .foot{position:absolute;left:110px;bottom:50px;font-size:22px;opacity:.6}',
+    '#pick{left:50%;top:110px;width:980px;margin-left:-490px;padding:26px 0 18px;display:none;z-index:9}',
+    '#pick.on{display:block}',
+    '#pick h2{margin:0 36px 14px;font-size:34px}',
+    '#pick .it{padding:16px 36px;display:flex;align-items:center;gap:20px}',
+    '#pick .it .ic{font-size:34px;width:44px;text-align:center}',
+    '#pick .it .t{font-size:28px;font-weight:600}',
+    '#pick .it .s{font-size:20px;opacity:.65;margin-top:4px}',
+    '#pick .it.sel{background:#4f8cff}',
+    '#pick .it.sel .s{opacity:.9}',
+    '#pick .hint{margin:12px 36px 0;font-size:19px;opacity:.55}'
   ].join('\n');
 
   var CURSOR_SVG = '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M3 2l7.5 19 2.6-7.7L21 10.6z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg>';
@@ -672,13 +689,15 @@
       '<div class="hint">◀ ▶ atrasar / adelantar · OK pausa · CH ▲▼ ±1 min · Atrás salir</div></div>' +
       '<div id="menu" class="panel"></div>' +
       '<div id="kb" class="panel"></div>' +
-      '<div id="home" class="panel"></div>';
+      '<div id="home" class="panel"></div>' +
+      '<div id="pick" class="panel"></div>';
     cursorEl = root.getElementById('cur');
     toastEl = root.getElementById('toast');
     osdEl = root.getElementById('osd');
     menuEl = root.getElementById('menu');
     kbEl = root.getElementById('kb');
     homeEl = root.getElementById('home');
+    pickEl = root.getElementById('pick');
     document.documentElement.appendChild(host);
     drawCursor();
   }
@@ -759,7 +778,8 @@
     videoSource = src;
     lastState = st;
     // Pasa a pantalla completa solo con videos largos (o en vivo), no con anuncios cortos.
-    if (!videoMode && (!st.dur || st.dur > 90)) {
+    // Si el usuario eligió el reproductor, entra con cualquier video.
+    if (!videoMode && (playerMode || !st.dur || st.dur > 90)) {
       enterVideo();
     }
   }
@@ -771,11 +791,105 @@
     if (!announced) { toast('📺 Modo TV · Atrás para salir', 3500); announced = true; }
   }
   function exitVideo() {
+    playerMode = false;
     setVideoMode(false);
     osdEl.classList.remove('on');
     drawCursor();
     toast('Modo TV desactivado · Menú ▸ "Ver video en pantalla completa" para volver', 3000);
   }
+  /* --- buscador de videos de la página --- */
+  var frameVinfo = [], playerMode = false, pickShown = false, pickItems = [], pickIdx = 0;
+  function noteVinfo(fe, d) {
+    for (var i = 0; i < frameVinfo.length; i++) if (frameVinfo[i].el === fe) { frameVinfo[i].n = d.n; frameVinfo[i].dur = d.dur; return; }
+    frameVinfo.push({ el: fe, n: d.n, dur: d.dur });
+  }
+  function vinfoFor(f) {
+    for (var i = 0; i < frameVinfo.length; i++) if (frameVinfo[i].el === f) return frameVinfo[i];
+    return null;
+  }
+  function collectCandidates() {
+    var list = [];
+    allVideos().forEach(function (v) {
+      var src = v.currentSrc || v.src || '';
+      var has = src || v.querySelector('source');
+      var r = v.getBoundingClientRect();
+      if (!has && r.width < 200) return;
+      if (src && isAd(src)) return;
+      var d = isFinite(v.duration) && v.duration ? v.duration : 0;
+      list.push({ kind: 'video', el: v, score: 3 + (d > 90 ? 2 : 0), ic: '🎬', t: 'Video de la página', s: (d ? fmt(d) : 'duración desconocida') + (v.paused ? '' : ' · reproduciéndose') });
+    });
+    var frames = [].slice.call(document.querySelectorAll('iframe'));
+    shadowRoots.forEach(function (r) { try { frames = frames.concat([].slice.call(r.querySelectorAll('iframe'))); } catch (e) {} });
+    frames.forEach(function (f) {
+      var src = f.getAttribute('src') || f.getAttribute('data-src') || f.getAttribute('data-lazy-src') || '';
+      if (!src || /^(about|javascript):/i.test(src) || isAd(src)) return;
+      var r = f.getBoundingClientRect();
+      var info = vinfoFor(f);
+      var looks = /embed|player|video|stream|watch|play|vid/i.test(src);
+      if (!info && !(r.width >= 250 && r.height >= 140 && (looks || r.width >= 480))) return;
+      var u = parseUrl(src);
+      list.push({ kind: 'frame', el: f, src: src, score: info ? 4 : looks ? 2 : 1, ic: '▶️', t: info ? 'Video en un reproductor' : 'Reproductor',
+        s: (u ? u.hostname : src.slice(0, 40)) + (info && info.dur ? ' · ' + fmt(info.dur) : '') });
+    });
+    list.sort(function (a, b) { return b.score - a.score; });
+    return list.slice(0, 8);
+  }
+  function pickOpen() { return pickEl && pickEl.classList.contains('on'); }
+  function openPick(list) {
+    closeMenu(); closeKb();
+    pickItems = list.concat([{ kind: 'none', ic: '✕', t: 'Seguir navegando', s: 'Cerrar esta ventana' }]);
+    pickIdx = 0;
+    renderPick();
+    pickEl.classList.add('on');
+  }
+  function closePick() { if (pickEl) pickEl.classList.remove('on'); }
+  function renderPick() {
+    var h = '<h2>🎬 Videos encontrados</h2>';
+    for (var i = 0; i < pickItems.length; i++) {
+      var it = pickItems[i];
+      h += '<div class="it' + (i === pickIdx ? ' sel' : '') + '"><span class="ic">' + it.ic + '</span><div><div class="t">' + esc(it.t) + '</div><div class="s">' + esc(it.s) + '</div></div></div>';
+    }
+    h += '<div class="hint">▲▼ elegir · OK abrir · Atrás cerrar · Menú ▸ "Buscar videos" para volver a verla</div>';
+    pickEl.innerHTML = h;
+  }
+  function pickKey(code) {
+    if (code === K.UP) pickIdx = (pickIdx + pickItems.length - 1) % pickItems.length;
+    else if (code === K.DOWN) pickIdx = (pickIdx + 1) % pickItems.length;
+    else if (code === K.ENTER) { var it = pickItems[pickIdx]; closePick(); choose(it); return; }
+    else if (code === K.BACK || code === K.ESC) { closePick(); return; }
+    renderPick();
+  }
+  function choose(it) {
+    if (!it || it.kind === 'none') return;
+    if (it.kind === 'video') {
+      curVideo = it.el; videoSource = 'local';
+      enterVideo();
+      try { var pr = it.el.play(); if (pr && pr.catch) pr.catch(function () {}); } catch (e) {}
+      return;
+    }
+    // Reproductor en un recuadro: se agranda a toda la pantalla con el cursor activo.
+    var f = it.el;
+    if (!f.getAttribute('src') && it.src) f.setAttribute('src', it.src);
+    videoChild = f; videoSource = 'child'; playerMode = true;
+    maximize(f);
+    cx = Math.round(innerWidth / 2); cy = Math.round(innerHeight / 2); drawCursor();
+    if (f.contentWindow) sendDown(f.contentWindow, { t: 'vcmd', cmd: 'play' });
+    toast('Reproductor en pantalla completa · Pon el cursor en ▶ y dale OK · Atrás para salir', 5000);
+  }
+  function exitPlayer() {
+    playerMode = false;
+    restore();
+    drawCursor();
+    toast('Reproductor cerrado', 1500);
+  }
+  function autoPick() {
+    if (pickShown || videoMode || playerMode || isHome() || menuOpen() || kbOpen() || homeOpen() || pickOpen()) return;
+    var list = collectCandidates();
+    if (!list.length) return;
+    pickShown = true;
+    openPick(list);
+  }
+
   var seekRun = 0, lastSeekTs = 0, lastSeekDir = 0;
   function seek(dir) {
     var now = Date.now();
@@ -803,6 +917,12 @@
       { ic: '★', t: 'Guardar esta página en favoritos', fn: function () {
         closeMenu();
         go(HOME_URL + '&add=' + encodeURIComponent(location.href) + '&title=' + encodeURIComponent(document.title || location.hostname));
+      } },
+      { ic: '🎬', t: 'Buscar videos en la página', fn: function () {
+        closeMenu();
+        var list = collectCandidates();
+        if (!list.length) { toast('No encontré videos en esta página'); return; }
+        openPick(list);
       } },
       { ic: '📺', t: 'Ver video en pantalla completa', fn: function () {
         closeMenu();
@@ -998,6 +1118,7 @@
   /* --- teclas --- */
   function onKey(code, repeat, ev) {
     if (kbOpen()) { kbKey(code, ev); return true; }
+    if (pickOpen()) { pickKey(code); return true; }
     if (homeOpen()) { homeKey(code); return true; }
     if (menuOpen()) { menuKey(code); return true; }
 
@@ -1034,7 +1155,9 @@
       case K.YELLOW: enterVideo(); return true;
       case K.RED: openUrl(); return true;
       case K.GREEN: go(HOME_URL); return true;
-      case K.BACK: case K.ESC: case K.BLUE: openMenu(); return true;
+      case K.BACK: case K.ESC: case K.BLUE:
+        if (playerMode) { exitPlayer(); return true; }
+        openMenu(); return true;
     }
     return false;
   }
@@ -1076,6 +1199,6 @@
     startObserver();
     setInterval(buildUi, 2000);
     if (isHome()) { handleHomeParams(); openHome(); }
-    else toast('Flechas: cursor · OK: clic · Atrás: menú', 2500);
+    else { toast('Flechas: cursor · OK: clic · Atrás: menú', 2500); setTimeout(autoPick, 3000); setTimeout(autoPick, 7000); }
   });
 })();

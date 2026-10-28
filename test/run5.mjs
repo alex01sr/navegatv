@@ -1,0 +1,26 @@
+import { createRequire } from 'module';
+const require = createRequire('/Users/alexanderreyes/.npm/_npx/9833c18b2d85bc59/node_modules/');
+const { chromium } = require('playwright');
+import fs from 'fs';
+const code = fs.readFileSync('../dist/navegatv.js','utf8');
+const browser = await chromium.launch({ channel: 'chrome', headless: true, args:['--autoplay-policy=no-user-gesture-required'] });
+const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+await ctx.addInitScript(code);
+const page = await ctx.newPage();
+const errs=[]; page.on('pageerror', e => errs.push(e.message));
+await page.goto('http://localhost:8001/top.html'); await page.waitForTimeout(3800);
+const sr = () => page.evaluate(()=>{ const r=document.getElementById('ntv-host').shadowRoot; return { pick: r.getElementById('pick').classList.contains('on'), items: [...r.querySelectorAll('#pick .it .t')].map(e=>e.textContent), subs:[...r.querySelectorAll('#pick .it .s')].map(e=>e.textContent) }; });
+const r = { popup: await sr() };
+await page.screenshot({ path: 'pick.png' });
+await page.keyboard.press('Enter'); await page.waitForTimeout(800);
+r.afterChoose = await page.evaluate(()=>{ const f=document.getElementById('pl'); const b=f.getBoundingClientRect(); return { iframeRect:[b.x,b.y,b.width,b.height] }; });
+await page.keyboard.press('Enter');   // OK en el centro = clic sobre el reproductor
+await page.waitForTimeout(2500);
+const fr = page.frames().find(f=>f.url().includes('player'));
+r.video = await fr.evaluate(()=>{ const v=document.getElementById('v'); return { paused:v.paused, maxed: v.getBoundingClientRect().height }; });
+r.vmode = await page.evaluate(()=>document.documentElement.classList.contains('ntv-vmode'));
+await page.keyboard.press('Escape'); await page.waitForTimeout(400);
+r.afterBack = await page.evaluate(()=>{ const f=document.getElementById('pl'); const b=f.getBoundingClientRect(); return [b.width,b.height]; });
+r.errs = errs;
+console.log(JSON.stringify(r, null, 1));
+await browser.close();
