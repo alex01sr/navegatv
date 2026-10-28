@@ -408,13 +408,13 @@
       return;
     }
     var local = curVideo && isConnected(curVideo) ? curVideo : null;
-    if (videoSource === 'child' && videoChild && document.contains(videoChild)) {
+    if (videoSource === 'child' && videoChild && isConnected(videoChild)) {
       maximize(videoChild);
       sendDown(videoChild.contentWindow, { t: 'vmode', on: true });
     } else {
       if (!local) local = pickVideo();
       if (local) { curVideo = local; maximize(local); }
-      else if (videoChild && document.contains(videoChild)) {
+      else if (videoChild && isConnected(videoChild)) {
         maximize(videoChild);
         sendDown(videoChild.contentWindow, { t: 'vmode', on: true });
       }
@@ -422,10 +422,18 @@
     }
   }
   function routeVcmd(cmd, arg) {
-    if (videoSource === 'child' && videoChild && document.contains(videoChild)) {
+    if (videoSource === 'child' && videoChild && isConnected(videoChild) && videoChild.contentWindow) {
       sendDown(videoChild.contentWindow, { t: 'vcmd', cmd: cmd, arg: arg });
-    } else vcmd(cmd, arg);
+      return;
+    }
+    if (pickVideo()) { vcmd(cmd, arg); return; }
+    // Sin video aquí: la orden baja al recuadro que tiene el video (o a todos), por muchos niveles que haya.
+    var targets = videoChild && isConnected(videoChild) ? [videoChild] : [].slice.call(document.querySelectorAll('iframe'));
+    for (var i = 0; i < targets.length; i++) {
+      if (targets[i].contentWindow) sendDown(targets[i].contentWindow, { t: 'vcmd', cmd: cmd, arg: arg });
+    }
   }
+
 
   /* ------------------------------------------------------------------ */
   /* 3. Clic y scroll en un punto (también dentro de iframes)            */
@@ -566,6 +574,11 @@
     var fe = frameElFor(e.source);
     if (!fe) return;
     if (d.t === 'hasvideo') { videoChild = fe; videoSource = 'child'; }
+    // Un recuadro hijo avisa que tiene videos: recordarlo para mandarle las órdenes.
+    if (d.t === 'vinfo' && !IS_TOP && (!videoChild || !isConnected(videoChild))) {
+      videoChild = fe;
+      if (!pickVideo()) videoSource = 'child';
+    }
     if (d.t === 'vstate' && fe !== videoChild) return;
     if (d.t === 'edit') { editChild = fe; editSource = 'child'; }
     if (IS_TOP) {
